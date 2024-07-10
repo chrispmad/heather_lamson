@@ -1,0 +1,164 @@
+---
+title: "Mapping with Heather"
+author: "Heather Lamson"
+date: "`r Sys.Date()`"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+---
+
+<style>
+.crosstalk-bscols {    
+/*push content away from far right and left edges*/
+  margin-right: 5% !important;
+  margin-left: 5% !important;
+}
+
+.chart-wrapper {
+  border-radius: 1rem;
+}
+
+.chart-title {
+  border-radius: 1rem 1rem 0rem 0rem;
+  background: lightblue;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+library()
+library(tidyverse)
+library(sf)
+library(readxl)
+library(crosstalk)
+library(leaflet)
+library(leaflet.extras)
+library(flexdashboard)
+d = read_excel(path = 'data/Data Master_A.xlsx') |> 
+  purrr::set_names(snakecase::to_snake_case)
+```
+
+```{r filter_d}
+
+dsf = d |> 
+  dplyr::filter(!is.na(easting)) |> 
+  st_as_sf(coords = c('easting','northing'), crs = 2955) |> 
+  sf::st_transform(4326) |> 
+  dplyr::mutate(key = as.character(row_number()))
+
+# Assumed data cleaning - should all Microsatellite levels be treated as one?
+dsf = dsf |> 
+  dplyr::mutate(genotype_method = ifelse(stringr::str_detect(genotype_method, '(Marker|Microsatellite)'), 'Microsatellite', genotype_method))
+
+dsf = dsf |> 
+  dplyr::mutate(wct_bin = as.numeric(cut(wct_allele_frequency_1_pnon_wct, 5))) |> 
+  dplyr::mutate(wct_bin = forcats::fct_inseq(as.factor(wct_bin)))
+```
+
+```{r make_crosstalk_obj}
+dsf_k = dsf |> 
+  dplyr::mutate(key = as.character(row_number()))
+
+d_ct = SharedData$new(dsf_k,
+  key = ~key)
+```
+
+Column {data-width=300}
+--------------------------------------------
+
+### Map Filters
+
+```{r make_ct_filters}
+year_filter = filter_slider(id = 'year_filter', label = 'Year', sharedData = d_ct, ~sample_year, sep = '')
+
+geno_filter = filter_checkbox(id = 'geno_filter', label = 'Genotype Method', sharedData = d_ct, ~genotype_method)
+
+wct_filter = filter_checkbox(id = 'wct_filter', label = 'WCT Bin', sharedData = d_ct, ~wct_bin)
+```
+
+```{r leaf_map_controls}
+bscols(
+  list(
+    year_filter,
+    bscols(
+      geno_filter,
+      wct_filter
+    )
+  )
+)
+```
+
+Column {.tabset data-width=600}
+--------------------------------------------
+
+```{r make_leaflet_map}
+
+genotype_pal = leaflet::colorFactor(palette = 'Set3', domain = unique(dsf$genotype_method))
+
+year_pal = leaflet::colorBin(palette = 'Spectral', domain = dsf$sample_year)
+  
+wct_pal = leaflet::colorFactor(palette = 'viridis', domain = unique(dsf[!is.na(dsf$wct_bin),]$wct_bin))
+
+popup_tbls = leafpop::popupTable(
+  dsf |>
+    sf::st_drop_geometry()
+)
+```
+
+### By Genotype Method
+```{r genotype_leafmap, out.height=500, out.width=800}
+leaflet() |> 
+      addTiles() |>  
+      addCircleMarkers(
+        data = d_ct,
+        label = ~paste0(site,' (',drainage, ')'),
+        popup = lapply(popup_tbls, htmltools::HTML),
+        color = 'black',
+        weight = 1,
+        fillColor = ~genotype_pal(genotype_method),
+        fillOpacity = 0.5) |> 
+  addLegend(
+    title = 'Genotype Method',
+    pal = genotype_pal,
+    values = dsf$genotype_method
+  )
+```
+
+### By Sample Year
+```{r sample_year_leafmap}
+leaflet() |> 
+      addTiles() |>  
+      addCircleMarkers(
+        data = d_ct,
+        label = ~paste0(site,' (',drainage, ')'),
+        popup = lapply(popup_tbls, htmltools::HTML),
+        color = 'black',
+        weight = 1,
+        fillColor = ~year_pal(sample_year),
+        fillOpacity = 0.5) |> 
+  addLegend(
+    title = 'Sample Year',
+    pal = year_pal,
+    values = dsf$sample_year
+  )
+```
+
+### By WCT Bin
+```{r wct_bin_leafmap}
+leaflet() |> 
+      addTiles() |>  
+      addCircleMarkers(
+        data = d_ct,
+        label = ~paste0(site,' (',drainage, ')'),
+        popup = lapply(popup_tbls, htmltools::HTML),
+        color = 'black',
+        weight = 1,
+        fillColor = ~wct_pal(wct_bin),
+        fillOpacity = 0.5)  |> 
+  addLegend(
+    title = 'WCT Bin',
+    pal = wct_pal,
+    values = dsf$wct_bin
+  )
+```
