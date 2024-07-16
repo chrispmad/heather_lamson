@@ -27,7 +27,6 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = F, message = F, warning = F)
-library()
 library(tidyverse)
 library(sf)
 library(readxl)
@@ -51,17 +50,56 @@ dsf = d |>
 dsf = dsf |> 
   dplyr::mutate(genotype_method = ifelse(stringr::str_detect(genotype_method, '(Marker|Microsatellite)'), 'Microsatellite', genotype_method))
 
+# Bin the wct_allele_frequency_1_pnon_wct variable with preset bins.
+# dsf = dsf |> 
+#   dplyr::mutate(wct_bin = as.numeric(cut(wct_allele_frequency_1_pnon_wct, 5))) |> 
+#   dplyr::mutate(wct_bin = forcats::fct_inseq(as.factor(wct_bin)))
+
+d_for_rounding = 1000
+
+bins = data.frame(bin_l = 0.7, bin_u = ceiling(d_for_rounding*0.7 + (d_for_rounding-d_for_rounding*0.7)/2)/d_for_rounding)
+
+for(i in c(2:100)){
+  bins[i,]$bin_l = bins[i-1,]$bin_u
+  bins[i,]$bin_u = ceiling(bins[i,]$bin_l*d_for_rounding + (d_for_rounding-bins[i,]$bin_l*d_for_rounding)/2)/d_for_rounding
+}
+
+bins = bins |> 
+  dplyr::filter(bin_l < 1) |>
+  dplyr::add_row(bin_l = 0, bin_u = 0.7) |> 
+  dplyr::arrange(bin_l) |> 
+  dplyr::mutate(bin = row_number()) |> 
+  dplyr::mutate(bin_label = paste0(bin," (",bin_l," < x <= ",bin_u,")"))
+
+
 dsf = dsf |> 
-  dplyr::mutate(wct_bin = as.numeric(cut(wct_allele_frequency_1_pnon_wct, 5))) |> 
-  dplyr::mutate(wct_bin = forcats::fct_inseq(as.factor(wct_bin)))
+  dplyr::mutate(wct = wct_allele_frequency_1_pnon_wct) |> 
+  rowwise() |>
+  dplyr::mutate(wct_b = ifelse(length(bins[bins$bin_l < wct & bins$bin_u >= wct,]$bin)>0,
+                               bins[bins$bin_l < wct & bins$bin_u >= wct,]$bin,
+                               NA)
+  ) |> 
+  # dplyr::select(wct, wct_b)
+  dplyr::left_join(
+    bins |> 
+      dplyr::select(wct_b = bin, bin_label)
+  ) |> 
+  dplyr::mutate(bin_label = replace_na(bin_label, "No Data")) |> 
+  ungroup() |> 
+  dplyr::mutate(wct_b = factor(wct_b, levels = c(1:10))) |> 
+  dplyr::mutate(bin_label = factor(bin_label, levels = c(bins$bin_label,"No Data")))
+
+dsf = dsf |> 
+  dplyr::mutate(key = row_number())
 ```
 
 ```{r make_crosstalk_obj}
-dsf_k = dsf |> 
-  dplyr::mutate(key = as.character(row_number()))
+# dsf_k = dsf #|> 
+  # dplyr::mutate(key = as.character(row_number()))
 
-d_ct = SharedData$new(dsf_k,
-  key = ~key)
+d_ct = SharedData$new(dsf,
+  key = ~key
+  )
 ```
 
 Column {data-width=300}
@@ -74,7 +112,7 @@ year_filter = filter_slider(id = 'year_filter', label = 'Year', sharedData = d_c
 
 geno_filter = filter_checkbox(id = 'geno_filter', label = 'Genotype Method', sharedData = d_ct, ~genotype_method)
 
-wct_filter = filter_checkbox(id = 'wct_filter', label = 'WCT Bin', sharedData = d_ct, ~wct_bin)
+wct_filter = filter_checkbox(id = 'wct_filter', label = 'WCT Bin', sharedData = d_ct, ~wct_b)
 ```
 
 ```{r leaf_map_controls}
@@ -98,7 +136,7 @@ genotype_pal = leaflet::colorFactor(palette = 'Set3', domain = unique(dsf$genoty
 
 year_pal = leaflet::colorBin(palette = 'Spectral', domain = dsf$sample_year)
   
-wct_pal = leaflet::colorFactor(palette = 'viridis', domain = unique(dsf[!is.na(dsf$wct_bin),]$wct_bin))
+wct_pal = leaflet::colorFactor(palette = 'viridis', domain = unique(dsf[!is.na(dsf$wct_b),]$wct_b))
 
 popup_tbls = leafpop::popupTable(
   dsf |>
@@ -106,10 +144,70 @@ popup_tbls = leafpop::popupTable(
 )
 ```
 
+```{r}
+# l = leaflet() |> 
+#       addTiles() |>  
+#       addCircleMarkers(
+#         data = d_ct,
+#         label = ~paste0(site,' (',drainage, ')'),
+#         popup = lapply(popup_tbls, htmltools::HTML),
+#         color = 'black',
+#         weight = 1,
+#         fillColor = ~genotype_pal(genotype_method),
+#         group = "geno_method",
+#         fillOpacity = 0.5) |> 
+#   addLegend(
+#     title = 'Genotype Method',
+#     pal = genotype_pal,
+#     values = dsf$genotype_method,
+#     group = "geno_method"
+#   ) |> 
+#   addCircleMarkers(
+#         data = d_ct,
+#         label = ~paste0(site,' (',drainage, ')'),
+#         popup = lapply(popup_tbls, htmltools::HTML),
+#         color = 'black',
+#         weight = 1,
+#         fillColor = ~year_pal(sample_year),
+#         group = "sample_year",
+#         fillOpacity = 0.5) |> 
+#   addLegend(
+#     title = 'Sample Year',
+#     pal = year_pal,
+#     values = dsf$sample_year,
+#     group = "sample_year"
+#   ) |> 
+#   addCircleMarkers(
+#         data = d_ct,
+#         label = ~paste0(site,' (',drainage, ')'),
+#         popup = lapply(popup_tbls, htmltools::HTML),
+#         color = 'black',
+#         weight = 1,
+#         group = "WCT_bin",
+#         fillColor = ~wct_pal(wct_b),
+#         fillOpacity = 0.5)  |> 
+#   addLegend(
+#     title = 'WCT Bin',
+#     pal = wct_pal,
+#     values = dsf$wct_b,
+#     group = "WCT_bin"
+#   ) |> 
+#   addLayersControl(
+#     overlayGroups = c("geno_method","sample_year","WCT_bin"),
+#     options = layersControlOptions(collapsed = F),
+#     position = 'bottomleft'
+#   ) |> 
+#   hideGroup("sample_year") |> 
+#   hideGroup("WCT_bin")
+# 
+# l
+```
+
 ### By Genotype Method
+
 ```{r genotype_leafmap, out.height=500, out.width=800}
-leaflet() |> 
-      addTiles() |>  
+leaflet() |>
+      addTiles() |>
       addCircleMarkers(
         data = d_ct,
         label = ~paste0(site,' (',drainage, ')'),
@@ -117,7 +215,7 @@ leaflet() |>
         color = 'black',
         weight = 1,
         fillColor = ~genotype_pal(genotype_method),
-        fillOpacity = 0.5) |> 
+        fillOpacity = 0.5) |>
   addLegend(
     title = 'Genotype Method',
     pal = genotype_pal,
@@ -127,8 +225,8 @@ leaflet() |>
 
 ### By Sample Year
 ```{r sample_year_leafmap}
-leaflet() |> 
-      addTiles() |>  
+leaflet() |>
+      addTiles() |>
       addCircleMarkers(
         data = d_ct,
         label = ~paste0(site,' (',drainage, ')'),
@@ -136,7 +234,7 @@ leaflet() |>
         color = 'black',
         weight = 1,
         fillColor = ~year_pal(sample_year),
-        fillOpacity = 0.5) |> 
+        fillOpacity = 0.5) |>
   addLegend(
     title = 'Sample Year',
     pal = year_pal,
@@ -146,19 +244,21 @@ leaflet() |>
 
 ### By WCT Bin
 ```{r wct_bin_leafmap}
-leaflet() |> 
-      addTiles() |>  
+leaflet() |>
+      addTiles() |>
       addCircleMarkers(
         data = d_ct,
         label = ~paste0(site,' (',drainage, ')'),
         popup = lapply(popup_tbls, htmltools::HTML),
         color = 'black',
         weight = 1,
-        fillColor = ~wct_pal(wct_bin),
-        fillOpacity = 0.5)  |> 
+        fillColor = ~wct_pal(wct_b),
+        fillOpacity = 0.5)  |>
   addLegend(
     title = 'WCT Bin',
-    pal = wct_pal,
-    values = dsf$wct_bin
+    labels = c(bins$bin_label,"NA"),
+    values = dsf$wct_b,
+    colors = wct_pal(unique(dsf$wct_b))
+    # pal = wct_pal
   )
 ```
